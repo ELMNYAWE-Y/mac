@@ -15,15 +15,14 @@ jobs:
             -configure -allowAccessFor -allUsers -privs -all \
             -clientopts -setvnclegacy -vnclegacy yes -restart -agent
 
-      - name: Create User with Secure Password
+      - name: Create User
         run: |
-          PASSWORD="Yaso1212"
           USERNAME="macuser"
+          PASSWORD="Yaso1212"
           
+          # إنشاء المستخدم إذا لم يكن موجوداً
           if ! id "$USERNAME" &>/dev/null; then
             sudo sysadminctl -addUser "$USERNAME" -password "$PASSWORD" -admin
-          else
-            echo "$PASSWORD" | sudo dscl . -passwd "/Users/$USERNAME"
           fi
           
           echo "REMOTE_USERNAME=$USERNAME" >> $GITHUB_ENV
@@ -31,39 +30,33 @@ jobs:
 
       - name: Install Tailscale
         run: |
-          curl -fsSL https://pkgs.tailscale.com/stable/Tailscale-1.86.4-macos.pkg -o /tmp/tailscale.pkg
-          sudo installer -pkg /tmp/tailscale.pkg -target /
-          rm /tmp/tailscale.pkg
+          # تثبيت Tailscale مباشرة بدون تحميل ملف
+          brew install tailscale || \
+          curl -fsSL https://pkgs.tailscale.com/stable/Tailscale.pkg | sudo installer -pkg /dev/stdin -target /
 
-      - name: Start Tailscale Connection
+      - name: Start Tailscale
         run: |
-          # البحث عن مسار Tailscale
-          TAILSCALE_CMD=$(find /Applications -name "Tailscale" -type f -perm +111 2>/dev/null | head -1)
+          # تشغيل Tailscale مباشرة بدون بحث معقد
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }}
           
-          if [ -z "$TAILSCALE_CMD" ]; then
-            echo "❌ لم يتم العثور على Tailscale"
-            exit 1
-          fi
-
-          # تشغيل Tailscale
-          sudo "$TAILSCALE_CMD" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-mac-runner-$GITHUB_RUN_ID
-          
-          # الانتظار للحصول على IP
-          for i in {1..30}; do
-            TS_IP=$("$TAILSCALE_CMD" ip -4 2>/dev/null)
+          # الانتظار القصير للحصول على IP
+          for i in {1..6}; do
+            TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
             if [ -n "$TS_IP" ]; then
               echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
               echo "✅ تم الحصول على IP: $TS_IP"
-              break
+              exit 0
             fi
-            echo "الانتظار للحصول على IP من Tailscale..."
-            sleep 10
+            sleep 5
           done
+          
+          echo "❌ فشل في الحصول على IP"
+          exit 1
 
-      - name: Display Connection Info
+      - name: Show Connection Info
         run: |
           echo "=== معلومات الاتصال ==="
-          echo "العنوان: $TAILSCALE_IP"
+          echo "IP: $TAILSCALE_IP"
           echo "المستخدم: $REMOTE_USERNAME"
           echo "كلمة المرور: $REMOTE_PASSWORD"
-          echo "استخدم VNC للاتصال على المنفذ 5900"
+          echo "استخدم VNC على المنفذ 5900"
