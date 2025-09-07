@@ -41,35 +41,43 @@ jobs:
           TS_URL="https://pkgs.tailscale.com/stable/Tailscale-1.86.4-macos.pkg"
           INSTALLER_PATH="/tmp/tailscale.pkg"
           
+          echo "جاري تحميل Tailscale..."
           curl -L -o "$INSTALLER_PATH" "$TS_URL"
           
           if [ ! -f "$INSTALLER_PATH" ]; then
-              echo "فشل في تحميل حزمة Tailscale"
+              echo "❌ فشل في تحميل حزمة Tailscale"
               exit 1
           fi
           
+          echo "جاري تثبيت Tailscale..."
           sudo installer -pkg "$INSTALLER_PATH" -target /
+          
+          if [ ! -f "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]; then
+              echo "❌ فشل في تثبيت Tailscale - الملف غير موجود"
+              exit 1
+          fi
+          
           rm -f "$INSTALLER_PATH"
+          echo "✅ تم تثبيت Tailscale بنجاح"
 
       - name: Establish Tailscale Connection
         run: |
-          # الانتظار لتأكد من اكتمال التثبيت
-          sleep 15
-
-          # التأكد من وجود التطبيق في المسار الصحيح
-          if [ ! -f "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]; then
-              echo "لم يتم العثور على Tailscale في المسار المتوقع"
-              exit 1
+          echo "جاري انتظار بدء خدمة Tailscale..."
+          sleep 20
+          
+          if ! pgrep -q "Tailscale"; then
+              echo "❌ خدمة Tailscale لا تعمل، جاري تشغيلها..."
+              sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale up --reset
+              sleep 10
           fi
-
-          # تشغيل Tailscale بالمفتاح الصحيح
+          
+          echo "جاري الاتصال بشبكة Tailscale..."
           sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale up \
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
-            --hostname=gh-mac-runner-$GITHUB_RUN_ID
+            --hostname=gh-mac-runner-$GITHUB_RUN_ID \
+            --accept-routes=true
           
-          # الانتظار لتهيئة الشبكة
-          sleep 10
-          
+          echo "جاري انتظار تعيين عنوان IP..."
           TS_IP=""
           RETRIES=0
           MAX_RETRIES=30
@@ -78,6 +86,7 @@ jobs:
               TS_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || echo "")
               
               if [ -n "$TS_IP" ]; then
+                  echo "✅ تم تعيين عنوان IP: $TS_IP"
                   break
               fi
               
@@ -87,22 +96,21 @@ jobs:
           done
           
           if [ -z "$TS_IP" ]; then
-              echo "لم يتم تعيين عنوان IP من Tailscale بعد $MAX_RETRIES محاولة."
-              echo "التحقق من حالة Tailscale:"
+              echo "❌ فشل في الحصول على عنوان IP من Tailscale"
+              echo "حالة Tailscale:"
               /Applications/Tailscale.app/Contents/MacOS/Tailscale status
-              echo "التحقق من سجل Tailscale:"
-              tail -50 /var/log/tailscale.log || echo "لا يمكن قراءة السجل"
+              echo "السجلات:"
+              tail -20 /var/log/tailscale.log 2>/dev/null || echo "لا يمكن عرض السجلات"
               exit 1
           fi
           
-          echo "تم تعيين عنوان IP: $TS_IP"
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+          echo "✅ تم الاتصال بشبكة Tailscale بنجاح - IP: $TS_IP"
       
       - name: Verify VNC Accessibility
         run: |
           echo "عنوان Tailscale IP: $TAILSCALE_IP"
           
-          # تثبيت netcat إذا لم يكن موجوداً
           if ! command -v nc &> /dev/null; then
               if command -v brew &> /dev/null; then
                   brew install netcat || true
@@ -115,7 +123,7 @@ jobs:
           MAX_CONN_RETRIES=10
           while [ $CONN_RETRIES -lt $MAX_CONN_RETRIES ]; do
               if nc -z -w 5 "$TAILSCALE_IP" 5900; then
-                  echo "تم الاتصال TCP على منفذ VNC 5900 بنجاح!"
+                  echo "✅ تم الاتصال TCP على منفذ VNC 5900 بنجاح!"
                   break
               else
                   echo "محاولة $((CONN_RETRIES+1))/$MAX_CONN_RETRIES: فشل الاتصال TCP على منفذ VNC 5900"
@@ -125,7 +133,7 @@ jobs:
           done
           
           if [ $CONN_RETRIES -eq $MAX_CONN_RETRIES ]; then
-              echo "تحذير: فشل جميع محاولات الاتصال TCP على منفذ VNC 5900"
+              echo "⚠️ تحذير: فشل جميع محاولات الاتصال TCP على منفذ VNC 5900"
               echo "قد يكون الجدار الناري لا يزال يعيق الاتصال"
           fi
 
@@ -143,7 +151,6 @@ jobs:
           
           # الحفاظ على الاتصال نشطاً
           while true; do
-              # التحقق من حالة Tailscale كل دقيقة
               TS_STATUS=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale status 2>/dev/null | head -1 || echo "غير متصل")
               TS_IP_CURRENT=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || echo "")
               
