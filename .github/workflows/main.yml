@@ -1,0 +1,141 @@
+name: macOS Remote Access
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-remote:
+    runs-on: macos-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Configure Remote Management (VNC)
+        run: |
+          # تمكين Remote Management (VNC)
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -allowAccessFor -allUsers -privs -all \
+            -clientopts -setvnclegacy -vnclegacy yes -restart -agent
+
+      - name: Configure Firewall for VNC
+        run: |
+          # فتح منفذ VNC (5900)
+          echo "pass in proto tcp from any to any port 5900" | sudo pfctl -ef -
+          sudo pfctl -e || true
+
+      - name: Create User with Secure Password
+        run: |
+          PASSWORD="Yaso1212"
+          USERNAME="macuser"
+          
+          if ! id "$USERNAME" &>/dev/null; then
+              sudo sysadminctl -addUser "$USERNAME" -password "$PASSWORD" -admin
+              echo "User created: $USERNAME"
+          else
+              # طريقة أكثر موثوقية لتغيير كلمة المرور
+              sudo dscl . -passwd "/Users/$USERNAME" <<<"$PASSWORD"$'\n'"$PASSWORD"
+              echo "Password updated for: $USERNAME"
+          fi
+          
+          echo "REMOTE_USERNAME=$USERNAME" >> $GITHUB_ENV
+          echo "REMOTE_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          TS_URL="https://pkgs.tailscale.com/stable/Tailscale-1.86.4-macos.pkg"
+          INSTALLER_PATH="/tmp/tailscale.pkg"
+          
+          curl -L -o "$INSTALLER_PATH" "$TS_URL"
+          
+          if [ ! -f "$INSTALLER_PATH" ]; then
+              echo "فشل في تحميل حزمة Tailscale"
+              exit 1
+          fi
+          
+          sudo installer -pkg "$INSTALLER_PATH" -target /
+          rm -f "$INSTALLER_PATH"
+
+      - name: Establish Tailscale Connection
+        run: |
+          sleep 10
+
+          sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale up \
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=gh-mac-runner-$GITHUB_RUN_ID
+          
+          TS_IP=""
+          RETRIES=0
+          MAX_RETRIES=30
+          
+          while [ -z "$TS_IP" ] && [ $RETRIES -lt $MAX_RETRIES ]; do
+              TS_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || echo "")
+              
+              if [ -n "$TS_IP" ]; then
+                  break
+              fi
+              
+              echo "محاولة $((RETRIES+1))/$MAX_RETRIES: في انتظار عنوان IP من Tailscale..."
+              sleep 10
+              RETRIES=$((RETRIES+1))
+          done
+          
+          if [ -z "$TS_IP" ]; then
+              echo "لم يتم تعيين عنوان IP من Tailscale بعد $MAX_RETRIES محاولة."
+              /Applications/Tailscale.app/Contents/MacOS/Tailscale status
+              exit 1
+          fi
+          
+          echo "تم تعيين عنوان IP: $TS_IP"
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+      
+      - name: Verify VNC Accessibility
+        run: |
+          echo "عنوان Tailscale IP: $TAILSCALE_IP"
+          
+          if ! command -v nc &> /dev/null; then
+              brew install nmap || true
+          fi
+          
+          CONN_RETRIES=0
+          MAX_CONN_RETRIES=5
+          while [ $CONN_RETRIES -lt $MAX_CONN_RETRIES ]; do
+              if nc -z -w 5 "$TAILSCALE_IP" 5900; then
+                  echo "تم الاتصال TCP على منفذ VNC 5900 بنجاح!"
+                  break
+              else
+                  echo "محاولة $((CONN_RETRIES+1))/$MAX_CONN_RETRIES: فشل الاتصال TCP على منفذ VNC 5900"
+                  CONN_RETRIES=$((CONN_RETRIES+1))
+                  sleep 10
+              fi
+          done
+          
+          if [ $CONN_RETRIES -eq $MAX_CONN_RETRIES ]; then
+              echo "تحذير: فشل جميع محاولات الاتصال TCP على منفذ VNC 5900"
+          fi
+
+      - name: Maintain Connection
+        run: |
+          echo ""
+          echo "=== الوصول عن بعد ==="
+          echo "العنوان: $TAILSCALE_IP"
+          echo "النظام: macOS"
+          echo "البروتوكول: VNC (منفذ 5900)"
+          echo "اسم المستخدم: $REMOTE_USERNAME"
+          echo "كلمة المرور: $REMOTE_PASSWORD"
+          echo "=================="
+          echo ""
+          
+          while true; do
+              TS_STATUS=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale status 2>/dev/null || echo "غير متصل")
+              TS_IP_CURRENT=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || echo "")
+              
+              echo "[$(date)] حالة الاتصال: $TS_STATUS, IP: $TS_IP_CURRENT"
+              
+              if [ -z "$TS_IP_CURRENT" ] || [ "$TS_STATUS" = "غير متصل" ]; then
+                  echo "إعادة الاتصال بـ Tailscale..."
+                  sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale up \
+                    --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+                    --hostname=gh-mac-runner-$GITHUB_RUN_ID --reset
+              fi
+              
+              sleep 300
+          done
