@@ -20,7 +20,6 @@ jobs:
           USERNAME="macuser"
           PASSWORD="Yaso1212"
           
-          # إنشاء المستخدم إذا لم يكن موجوداً
           if ! id "$USERNAME" &>/dev/null; then
             sudo sysadminctl -addUser "$USERNAME" -password "$PASSWORD" -admin
           fi
@@ -28,30 +27,47 @@ jobs:
           echo "REMOTE_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "REMOTE_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
-      - name: Install Tailscale
+      - name: Install Tailscale (Corrected)
         run: |
-          # تثبيت Tailscale مباشرة بدون تحميل ملف
-          brew install tailscale || \
-          curl -fsSL https://pkgs.tailscale.com/stable/Tailscale.pkg | sudo installer -pkg /dev/stdin -target /
-
-      - name: Start Tailscale
-        run: |
-          # تشغيل Tailscale مباشرة بدون بحث معقد
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }}
+          # التأكد من تثبيت Homebrew أولاً
+          if ! command -v brew &>/dev/null; then
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            echo 'export PATH="/opt/homebrew/bin:$PATH"' >> ~/.zshrc
+            source ~/.zshrc
+          fi
           
-          # الانتظار القصير للحصول على IP
-          for i in {1..6}; do
+          # تصحيح اسم الحزمة إلى Tailscale (وليس Taliscale)
+          brew install tailscale
+
+      - name: Start and Configure Tailscale
+        run: |
+          # بدء خدمة Tailscale
+          brew services start tailscale
+          
+          # الانتظار لبدء الخدمة
+          sleep 10
+          
+          # الاتصال بشبكة Tailscale
+          tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }} --reset
+          
+          # الانتظار للحصول على IP
+          for i in {1..12}; do
             TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
             if [ -n "$TS_IP" ]; then
               echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
               echo "✅ تم الحصول على IP: $TS_IP"
-              exit 0
+              break
             fi
+            echo "الانتظار للحصول على IP من Tailscale... ($i/12)"
             sleep 5
           done
           
-          echo "❌ فشل في الحصول على IP"
-          exit 1
+          if [ -z "$TS_IP" ]; then
+            echo "❌ فشل في الحصول على IP"
+            echo "حالة Tailscale:"
+            tailscale status
+            exit 1
+          fi
 
       - name: Show Connection Info
         run: |
