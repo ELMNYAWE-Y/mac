@@ -27,52 +27,75 @@ jobs:
           echo "REMOTE_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "REMOTE_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
-      - name: Install Tailscale (Corrected)
+      - name: Install Tailscale
         run: |
-          # التأكد من تثبيت Homebrew أولاً
-          if ! command -v brew &>/dev/null; then
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-            echo 'export PATH="/opt/homebrew/bin:$PATH"' >> ~/.zshrc
-            source ~/.zshrc
-          fi
-          
-          # تصحيح اسم الحزمة إلى Tailscale (وليس Taliscale)
-          brew install tailscale
+          # تثبيت Tailscale باستخدام الطريقة المباشرة (بدون Homebrew)
+          curl -fsSL https://pkgs.tailscale.com/stable/Tailscale.pkg -o /tmp/tailscale.pkg
+          sudo installer -pkg /tmp/tailscale.pkg -target /
+          rm /tmp/tailscale.pkg
 
-      - name: Start and Configure Tailscale
+      - name: Start Tailscale Service
         run: |
-          # بدء خدمة Tailscale
-          brew services start tailscale
+          # بدء خدمة Tailscale يدوياً
+          echo "بدء خدمة Tailscale..."
+          sudo launchctl load /Library/LaunchDaemons/com.tailscale.tailscaled.plist
           
           # الانتظار لبدء الخدمة
-          sleep 10
+          sleep 15
           
+          # التحقق من أن الخدمة تعمل
+          if pgrep -q "tailscaled"; then
+            echo "✅ خدمة Tailscale تعمل"
+          else
+            echo "❌ خدمة Tailscale لا تعمل"
+            # محاولة بدء الخدمة بطريقة بديلة
+            sudo /Applications/Tailscale.app/Contents/MacOS/Tailscaled &
+            sleep 10
+          fi
+
+      - name: Configure Tailscale Connection
+        run: |
           # الاتصال بشبكة Tailscale
-          tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-${{ github.run_id }} --reset
+          echo "جاري الاتصال بشبكة Tailscale..."
+          sudo /Applications/Tailscale.app/Contents/MacOS/Tailscale up \
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=gh-runner-${{ github.run_id }} \
+            --reset
           
           # الانتظار للحصول على IP
-          for i in {1..12}; do
-            TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
+          echo "جاري انتظار تعيين عنوان IP..."
+          for i in {1..15}; do
+            TS_IP=$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || echo "")
             if [ -n "$TS_IP" ]; then
               echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
               echo "✅ تم الحصول على IP: $TS_IP"
               break
             fi
-            echo "الانتظار للحصول على IP من Tailscale... ($i/12)"
+            echo "الانتظار للحصول على IP... ($i/15)"
             sleep 5
           done
           
           if [ -z "$TS_IP" ]; then
             echo "❌ فشل في الحصول على IP"
             echo "حالة Tailscale:"
-            tailscale status
+            /Applications/Tailscale.app/Contents/MacOS/Tailscale status || true
             exit 1
           fi
 
+      - name: Verify Connection
+        run: |
+          echo "✅ الاتصال بشبكة Tailscale ناجح"
+          echo "عنوان IP: $TAILSCALE_IP"
+          echo "يمكنك الآن الاتصال باستخدام VNC على المنفذ 5900"
+
       - name: Show Connection Info
         run: |
-          echo "=== معلومات الاتصال ==="
-          echo "IP: $TAILSCALE_IP"
-          echo "المستخدم: $REMOTE_USERNAME"
-          echo "كلمة المرور: $REMOTE_PASSWORD"
-          echo "استخدم VNC على المنفذ 5900"
+          echo "=========================================="
+          echo "         معلومات الاتصال النهائية         "
+          echo "=========================================="
+          echo "📡 عنوان IP: $TAILSCALE_IP"
+          echo "👤 اسم المستخدم: $REMOTE_USERNAME"
+          echo "🔑 كلمة المرور: $REMOTE_PASSWORD"
+          echo "🚪 المنفذ: 5900 (VNC)"
+          echo "🔗 البروتوكول: VNC"
+          echo "=========================================="
